@@ -639,6 +639,7 @@ flowchart LR
 - Default XCom key is `return_value`
 - Data must be **serializable** (lists, dicts, strings, numbers)
 - XCom values are visible in the UI under Browse → XCom
+- **No explicit `>>` needed**: When you pass a task's return value as an argument to another task (e.g., `transform(extract())`), Airflow automatically infers the dependency order -- no need to write `extract >> transform >> load`
 
 ---
 
