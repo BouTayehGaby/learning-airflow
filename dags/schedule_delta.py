@@ -1,14 +1,17 @@
 from airflow.sdk import dag, task 
-from pendulum import datetime
+from pendulum import datetime, duration
+from airflow.timetables.trigger import DeltaTriggerTimetable
+
 
 @dag(
-        dag_id="first_schedule_dag",
-        start_date= datetime(year=2026, month=1, day=1, tz="Europe/Paris"),
-        schedule="@daily",
+        dag_id="delta_schedule_dag",
+        start_date= datetime(year=2026, month=1, day=26, tz="Europe/Paris"),
+        schedule=DeltaTriggerTimetable(duration(days=3)),
+        end_date= datetime(year=2026, month=1, day=31, tz="Europe/Paris"),
         is_paused_upon_creation=False,
         catchup=True
 )
-def first_schedule_dag():
+def delta_schedule_dag():
 
     @task.python
     def first_task():
@@ -31,4 +34,4 @@ def first_schedule_dag():
     first >> second >> third
 
 # Instantiating the DAG
-first_schedule_dag()
+delta_schedule_dag()
