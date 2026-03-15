@@ -1071,6 +1071,28 @@ def incremental_load(**kwargs):
     print(f"Running: {query}")
 ```
 
+### Where Do `data_interval_start` & `data_interval_end` Come From?
+
+These are **Airflow context variables** automatically injected at runtime by the timetable/schedule. When a task function accepts `**kwargs`, Airflow populates that dictionary with a full execution context -- no manual setup required.
+
+The timetable (e.g., `CronDataIntervalTimetable("@daily")`) determines the logical time window each DAG run is responsible for. For a daily schedule, a run triggered on January 28th would have:
+
+| Variable | Value |
+|----------|-------|
+| `data_interval_start` | `2026-01-27 00:00:00+01:00` |
+| `data_interval_end` | `2026-01-28 00:00:00+01:00` |
+
+The task **runs** at `data_interval_end` but processes data **for** the interval between start and end.
+
+**Two ways to access them:**
+
+| Method | Where | Syntax |
+|--------|-------|--------|
+| Python `kwargs` | `@task.python` functions | `kwargs['data_interval_start']` |
+| Jinja templating | Templated fields (e.g., BashOperator) | `{{ data_interval_start }}` |
+
+Both pull from the same Airflow context. Other commonly used context variables in `kwargs` include `ds` (logical date as `YYYY-MM-DD`), `ts` (ISO timestamp), `dag_run`, `ti` (task instance), and `params`.
+
 ### Interval Visualization
 
 ```mermaid
