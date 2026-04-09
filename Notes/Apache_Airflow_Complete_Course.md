@@ -1320,7 +1320,7 @@ flowchart TD
 
 ```python
 from airflow.decorators import dag
-from airflow.operators.trigger_dagrun import TriggerDagRunOperator
+from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOperator
 from pendulum import datetime
 
 @dag(
@@ -1348,7 +1348,7 @@ parent_orchestrator()
 
 ### Key Points
 
-- `TriggerDagRunOperator` from `airflow.operators.trigger_dagrun`
+- `TriggerDagRunOperator` from `airflow.providers.standard.operators.trigger_dagrun`
 - Child DAGs remain independent and can also run on their own schedule
 - The parent only controls execution **order**
 - All DAGs must be in the same `dags/` folder
