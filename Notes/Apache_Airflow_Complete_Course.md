@@ -1154,35 +1154,137 @@ Import `EventsTimetable` from `airflow.timetables.events`. The UI will show "eve
 
 **Assets** (Airflow 3.x, replacing "Datasets" from 2.x) enable **data-aware scheduling**: a DAG runs when its input data is ready, not on a time schedule.
 
+### The Problem Assets Solve
+
+Every scheduling method so far (presets, cron, delta, events) is **time-based** -- you tell Airflow *when* to run. But what if the answer is "run when the data is ready"?
+
+**Example**: Team A produces a CSV every day, but sometimes it takes 1 hour, sometimes 4 hours. Team B needs to process that CSV. With time-based scheduling, Team B either:
+- Runs too early (data not ready yet -- failure)
+- Runs too late (wastes hours waiting "just in case")
+
+Assets fix this: Team B's workflow runs **automatically the moment Team A's data is ready**.
+
+### `@asset` vs `@dag` -- What's the Difference?
+
+| | `@dag` | `@asset` |
+|---|---|---|
+| **What it defines** | A workflow (group of tasks) | A single piece of data + the logic that produces it |
+| **Scheduling** | Time-based only (cron, daily, delta) | Can be time-based OR triggered by another asset |
+| **Cross-DAG triggers** | Must use `TriggerDagRunOperator` (producer must name every consumer) | Automatic -- consumers subscribe to the asset, producer doesn't need to know about them |
+| **`self` parameter** | Not available | Gives access to metadata like `self.uri` (where the data lives) |
+
 ### Concept
 
 ```mermaid
 flowchart LR
-    subgraph "Producer DAG"
-        P1["extract"] --> P2["transform"] --> P3["load to S3"]
+    subgraph "Producer (runs on schedule)"
+        F["fetch_data<br/>@asset, schedule=@daily"]
     end
 
-    P3 -->|"updates Asset: s3://bucket/data.csv"| ASSET["Asset:<br/>s3://bucket/data.csv"]
+    F -->|"asset updated"| ASSET["Asset:<br/>fetch_data"]
 
-    ASSET -->|"triggers"| C1
+    ASSET -->|"automatically triggers"| P
 
-    subgraph "Consumer DAG"
-        C1["process new data"] --> C2["generate report"]
+    subgraph "Consumer (runs when data is ready)"
+        P["process_data<br/>@asset, schedule=fetch_data"]
     end
 ```
+
+The consumer has **no time schedule**. Its `schedule` points to an asset, meaning: "run me whenever that asset is updated."
+
+### Code -- Producer
+
+```python
+from airflow.sdk import dag, task, asset
+from pendulum import datetime
+import os
+
+@asset(
+    schedule="@daily",
+    uri="/opt/airflow/logs/data/data_extract.txt",
+    name="fetch_data"
+)
+def fetch_data(self):
+    os.makedirs(os.path.dirname(self.uri), exist_ok=True)
+
+    with open(self.uri, 'w') as f:
+        f.write(f"Data fetched successfully")
+
+    print(f"Data written to {self.uri}")
+```
+
+- `@asset` instead of `@dag` -- this function **is** the asset (both the data definition and the logic)
+- `schedule="@daily"` -- the producer still runs on a time schedule
+- `uri` -- where the data lives (file path, S3 URI, etc.)
+- `self` -- Airflow passes the asset object, so `self.uri` gives you the URI you declared above
+
+### Code -- Consumer
+
+```python
+from airflow.sdk import dag, task, asset
+from pendulum import datetime
+import os
+from asset_13 import fetch_data
+
+@asset(
+    schedule=fetch_data,       # <-- THIS is the key line
+    uri="/opt/airflow/logs/data/data_processed.txt",
+    name="process_data"
+)
+def process_data(self):
+    os.makedirs(os.path.dirname(self.uri), exist_ok=True)
+
+    with open(self.uri, 'w') as f:
+        f.write(f"Data processed successfully")
+
+    print(f"Data processed to {self.uri}")
+```
+
+- `schedule=fetch_data` -- no cron, no time. This asset runs **only when `fetch_data` finishes**
+- The producer (`fetch_data`) does not know or care about this consumer
+
+### Why Not Just Use `@dag` + `TriggerDagRunOperator`?
+
+You could wire the same chain using Ch 14's approach (parent DAG triggers child DAG), but:
+
+| `TriggerDagRunOperator` (Ch 14) | `@asset` (Ch 13) |
+|---|---|
+| Producer must **explicitly name** every consumer | Producer doesn't know its consumers exist |
+| Adding a new consumer = editing the producer DAG | Adding a new consumer = just point its `schedule` at the asset |
+| Tight coupling between DAGs | Loose coupling -- teams work independently |
 
 ### Key Points
 
 | Concept | Detail |
 |---------|--------|
 | **Asset** | A logical representation of data (table, file, URI) |
-| **Producer** | A task that updates an asset |
-| **Consumer** | A DAG that triggers when an asset is updated |
+| **Producer** | An `@asset` that creates/updates data (can be time-scheduled) |
+| **Consumer** | An `@asset` whose `schedule` points to another asset (data-triggered) |
+| **`self`** | Injected by Airflow into `@asset` functions -- carries metadata like `self.uri` |
 | **Data-aware scheduling** | Runs based on data availability, not time |
 
-- Assets create **cross-DAG dependencies** based on data
-- New in Airflow 3.x; see official docs for the full API
-- More powerful than Datasets (2.x) with additional metadata support
+### When to Use Assets
+
+```mermaid
+flowchart TD
+    Q{"How should the workflow be triggered?"}
+    Q -->|"At a specific time"| DAG["Use @dag<br/>(Ch 8-12)"]
+    Q -->|"When upstream data is ready"| ASSET["Use @asset<br/>(this chapter)"]
+    Q -->|"Explicitly by another DAG"| TRIG["Use TriggerDagRunOperator<br/>(Ch 14)"]
+```
+
+### Why Not Just Put Producer & Consumer in One DAG?
+
+For a simple two-step pipeline (`extract >> process`), a single DAG works fine. But assets solve problems that a single DAG **cannot** handle at scale:
+
+| Problem | Single DAG | Separate Assets |
+|---|---|---|
+| **Different teams** own producer & consumer | Both must edit the same DAG file -- tight coordination required | Each team owns their own file independently |
+| **Multiple consumers** need the same data | All consumer tasks live in one DAG -- one team's bug or slow task affects everyone | Each consumer is independent -- no interference |
+| **Different schedules** (producer daily, consumer weekly) | All tasks in a DAG share the same schedule | Each asset has its own schedule (or triggers on data) |
+| **Failure isolation** | Consumer failure marks the whole DAG run as failed; retry may re-run the producer | Each asset has its own run history, retries, and status |
+
+**Rule of thumb**: If you're the only person, with one producer and one consumer, a single DAG is simpler. Use assets when you need independent ownership, multiple consumers, different schedules, or cross-team decoupling.
 
 ---
 
